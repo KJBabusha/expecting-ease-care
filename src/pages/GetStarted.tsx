@@ -5,34 +5,111 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { 
   Heart, 
   Calendar, 
   User, 
-  Phone,
   MapPin,
   Baby,
   ArrowRight,
-  CheckCircle
+  CheckCircle,
+  Loader2,
+  AlertCircle,
+  ShieldCheck
 } from "lucide-react";
 import { Link } from "react-router-dom";
+import { useAuth } from "@clerk/clerk-react";
+
+type CalculationMethod = "dueDate" | "lastMenstrualPeriod";
+
+interface PregnancyProfileInput {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+  age: string;
+  calculationMethod: CalculationMethod;
+  date: string;
+  pregnancyNumber: string;
+  location: string;
+  hospital: string;
+  healthConditions: string[];
+  language: string;
+  reminders: {
+    appointments: boolean;
+    medications: boolean;
+    tips: boolean;
+    emergency: boolean;
+  };
+  communicationMethod: string;
+  agreedToTerms: boolean;
+}
+
+const HEALTH_CONDITIONS = [
+  "Diabetes",
+  "High Blood Pressure",
+  "Previous Complications",
+  "Other",
+] as const;
+
+const LANGUAGES = ["english", "swahili", "kikuyu", "luo"] as const;
+const COUNTIES = ["nairobi", "mombasa", "kisumu", "nakuru", "other"] as const;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
 
 const GetStarted = () => {
   const [step, setStep] = useState(1);
   const totalSteps = 4;
   const progress = (step / totalSteps) * 100;
+  const { isSignedIn, getToken } = useAuth();
+
+  const [profile, setProfile] = useState<PregnancyProfileInput>({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    age: "",
+    calculationMethod: "dueDate",
+    date: "",
+    pregnancyNumber: "",
+    location: "",
+    hospital: "",
+    healthConditions: [],
+    language: "",
+    reminders: {
+      appointments: true,
+      medications: true,
+      tips: true,
+      emergency: true,
+    },
+    communicationMethod: "",
+    agreedToTerms: false,
+  });
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [status, setStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const nextStep = () => {
     if (step < totalSteps) {
       setStep(step + 1);
+      setStatus(null);
     }
   };
 
   const prevStep = () => {
     if (step > 1) {
       setStep(step - 1);
+      setStatus(null);
     }
+  };
+
+  const toggleHealthCondition = (condition: (typeof HEALTH_CONDITIONS)[number]) => {
+    setProfile((prev) => ({
+      ...prev,
+      healthConditions: prev.healthConditions.includes(condition)
+        ? prev.healthConditions.filter((c) => c !== condition)
+        : [...prev.healthConditions, condition],
+    }));
   };
 
   const benefits = [
@@ -52,6 +129,91 @@ const GetStarted = () => {
       description: "Track your baby's growth milestones"
     }
   ];
+
+  const canSubmit = useMemo(() => {
+    return (
+      profile.firstName &&
+      profile.lastName &&
+      profile.email &&
+      profile.phone &&
+      profile.age &&
+      profile.date &&
+      profile.pregnancyNumber &&
+      profile.location &&
+      profile.language &&
+      profile.communicationMethod &&
+      profile.agreedToTerms
+    );
+  }, [profile]);
+
+  const handleComplete = async () => {
+    if (!isSignedIn) {
+      setStatus({
+        type: "error",
+        message: "Please sign in with your MamaCare account before completing setup.",
+      });
+      return;
+    }
+
+    if (!canSubmit) {
+      setStatus({
+        type: "error",
+        message: "Kindly complete all required fields and agree to the terms.",
+      });
+      return;
+    }
+
+    setIsSubmitting(true);
+    setStatus(null);
+
+    try {
+      const token = await getToken();
+      if (!token) {
+        throw new Error("Unable to retrieve authentication token.");
+      }
+
+      const payload = {
+        ...profile,
+        reminders: {
+          appointments: profile.reminders.appointments,
+          medications: profile.reminders.medications,
+          tips: profile.reminders.tips,
+          emergency: profile.reminders.emergency,
+        },
+        ...(profile.calculationMethod === "dueDate"
+          ? { dueDate: profile.date }
+          : { lastMenstrualPeriod: profile.date }),
+      };
+
+      const response = await fetch(`${API_BASE_URL}/api/pregnancy-profile`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || "Failed to save your profile.");
+      }
+
+      setStatus({
+        type: "success",
+        message: "Your pregnancy profile has been saved successfully!",
+      });
+    } catch (error) {
+      console.error("Error saving pregnancy profile:", error);
+      const message = error instanceof Error ? error.message : "Something went wrong. Please try again.";
+      setStatus({
+        type: "error",
+        message,
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/5 to-blue/5">
@@ -92,7 +254,24 @@ const GetStarted = () => {
 
           <div className="grid lg:grid-cols-3 gap-8">
             {/* Form Section */}
-            <div className="lg:col-span-2">
+            <div className="lg:col-span-2 space-y-4">
+              {status && (
+                <div
+                  className={`flex items-center space-x-2 rounded-lg border px-4 py-3 ${
+                    status.type === "success"
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                      : "border-red-300 bg-red-50 text-red-900"
+                  }`}
+                >
+                  {status.type === "success" ? (
+                    <ShieldCheck className="h-5 w-5" />
+                  ) : (
+                    <AlertCircle className="h-5 w-5" />
+                  )}
+                  <p className="text-sm font-medium">{status.message}</p>
+                </div>
+              )}
+
               <Card className="shadow-elegant">
                 <CardContent className="p-8">
                   {step === 1 && (
@@ -108,27 +287,62 @@ const GetStarted = () => {
                       <div className="grid md:grid-cols-2 gap-4">
                         <div>
                           <Label htmlFor="firstName">First Name</Label>
-                          <Input id="firstName" placeholder="Enter your first name" />
+                          <Input
+                            id="firstName"
+                            placeholder="Enter your first name"
+                            value={profile.firstName}
+                            onChange={(e) =>
+                              setProfile((prev) => ({ ...prev, firstName: e.target.value }))
+                            }
+                          />
                         </div>
                         <div>
                           <Label htmlFor="lastName">Last Name</Label>
-                          <Input id="lastName" placeholder="Enter your last name" />
+                          <Input
+                            id="lastName"
+                            placeholder="Enter your last name"
+                            value={profile.lastName}
+                            onChange={(e) =>
+                              setProfile((prev) => ({ ...prev, lastName: e.target.value }))
+                            }
+                          />
                         </div>
                       </div>
 
                       <div>
                         <Label htmlFor="email">Email Address</Label>
-                        <Input id="email" type="email" placeholder="your.email@example.com" />
+                        <Input
+                          id="email"
+                          type="email"
+                          placeholder="your.email@example.com"
+                          value={profile.email}
+                          onChange={(e) =>
+                            setProfile((prev) => ({ ...prev, email: e.target.value }))
+                          }
+                        />
                       </div>
 
                       <div>
                         <Label htmlFor="phone">Phone Number</Label>
-                        <Input id="phone" type="tel" placeholder="+254 700 123 456" />
+                        <Input
+                          id="phone"
+                          type="tel"
+                          placeholder="+254 700 123 456"
+                          value={profile.phone}
+                          onChange={(e) =>
+                            setProfile((prev) => ({ ...prev, phone: e.target.value }))
+                          }
+                        />
                       </div>
 
                       <div>
                         <Label htmlFor="age">Age</Label>
-                        <Select>
+                        <Select
+                          value={profile.age}
+                          onValueChange={(value) =>
+                            setProfile((prev) => ({ ...prev, age: value }))
+                          }
+                        >
                           <SelectTrigger>
                             <SelectValue placeholder="Select your age range" />
                           </SelectTrigger>
@@ -157,31 +371,56 @@ const GetStarted = () => {
                       <div>
                         <Label>How would you like to calculate your due date?</Label>
                         <div className="grid md:grid-cols-2 gap-4 mt-3">
-                          <Card className="cursor-pointer border-2 hover:border-primary transition-colors">
-                            <CardContent className="p-4 text-center">
-                              <Calendar className="w-8 h-8 mx-auto mb-2 text-primary" />
-                              <h3 className="font-semibold">Due Date</h3>
-                              <p className="text-sm text-muted-foreground">I know my due date</p>
-                            </CardContent>
-                          </Card>
-                          <Card className="cursor-pointer border-2 hover:border-primary transition-colors">
-                            <CardContent className="p-4 text-center">
-                              <Heart className="w-8 h-8 mx-auto mb-2 text-primary" />
-                              <h3 className="font-semibold">Last Period</h3>
-                              <p className="text-sm text-muted-foreground">Last menstrual period</p>
-                            </CardContent>
-                          </Card>
+                          {(["dueDate", "lastMenstrualPeriod"] as CalculationMethod[]).map((method) => (
+                            <Card
+                              key={method}
+                              className={`cursor-pointer border-2 transition-colors ${
+                                profile.calculationMethod === method
+                                  ? "border-primary bg-primary/5"
+                                  : "hover:border-primary"
+                              }`}
+                              onClick={() =>
+                                setProfile((prev) => ({ ...prev, calculationMethod: method }))
+                              }
+                            >
+                              <CardContent className="p-4 text-center">
+                                {method === "dueDate" ? (
+                                  <Calendar className="w-8 h-8 mx-auto mb-2 text-primary" />
+                                ) : (
+                                  <Heart className="w-8 h-8 mx-auto mb-2 text-primary" />
+                                )}
+                                <h3 className="font-semibold">
+                                  {method === "dueDate" ? "Due Date" : "Last Period"}
+                                </h3>
+                                <p className="text-sm text-muted-foreground">
+                                  {method === "dueDate" ? "I know my due date" : "Last menstrual period"}
+                                </p>
+                              </CardContent>
+                            </Card>
+                          ))}
                         </div>
                       </div>
 
                       <div>
                         <Label htmlFor="date">Select Date</Label>
-                        <Input id="date" type="date" />
+                        <Input
+                          id="date"
+                          type="date"
+                          value={profile.date}
+                          onChange={(e) =>
+                            setProfile((prev) => ({ ...prev, date: e.target.value }))
+                          }
+                        />
                       </div>
 
                       <div>
                         <Label>Is this your first pregnancy?</Label>
-                        <Select>
+                        <Select
+                          value={profile.pregnancyNumber}
+                          onValueChange={(value) =>
+                            setProfile((prev) => ({ ...prev, pregnancyNumber: value }))
+                          }
+                        >
                           <SelectTrigger>
                             <SelectValue placeholder="Select option" />
                           </SelectTrigger>
@@ -208,31 +447,47 @@ const GetStarted = () => {
 
                       <div>
                         <Label htmlFor="location">Location (County)</Label>
-                        <Select>
+                        <Select
+                          value={profile.location}
+                          onValueChange={(value) =>
+                            setProfile((prev) => ({ ...prev, location: value }))
+                          }
+                        >
                           <SelectTrigger>
                             <SelectValue placeholder="Select your county" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="nairobi">Nairobi</SelectItem>
-                            <SelectItem value="mombasa">Mombasa</SelectItem>
-                            <SelectItem value="kisumu">Kisumu</SelectItem>
-                            <SelectItem value="nakuru">Nakuru</SelectItem>
-                            <SelectItem value="other">Other</SelectItem>
+                            {COUNTIES.map((county) => (
+                              <SelectItem key={county} value={county}>
+                                {county.charAt(0).toUpperCase() + county.slice(1)}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                       </div>
 
                       <div>
                         <Label htmlFor="hospital">Preferred Hospital/Clinic</Label>
-                        <Input id="hospital" placeholder="Enter hospital or clinic name" />
+                        <Input
+                          id="hospital"
+                          placeholder="Enter hospital or clinic name"
+                          value={profile.hospital}
+                          onChange={(e) =>
+                            setProfile((prev) => ({ ...prev, hospital: e.target.value }))
+                          }
+                        />
                       </div>
 
                       <div>
                         <Label>Health Conditions (Optional)</Label>
                         <div className="space-y-3 mt-3">
-                          {['Diabetes', 'High Blood Pressure', 'Previous Complications', 'Other'].map((condition) => (
+                          {HEALTH_CONDITIONS.map((condition) => (
                             <div key={condition} className="flex items-center space-x-2">
-                              <Checkbox id={condition} />
+                              <Checkbox
+                                id={condition}
+                                checked={profile.healthConditions.includes(condition)}
+                                onCheckedChange={() => toggleHealthCondition(condition)}
+                              />
                               <Label htmlFor={condition}>{condition}</Label>
                             </div>
                           ))}
@@ -241,15 +496,21 @@ const GetStarted = () => {
 
                       <div>
                         <Label>Preferred Language</Label>
-                        <Select>
+                        <Select
+                          value={profile.language}
+                          onValueChange={(value) =>
+                            setProfile((prev) => ({ ...prev, language: value }))
+                          }
+                        >
                           <SelectTrigger>
                             <SelectValue placeholder="Select language" />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="english">English</SelectItem>
-                            <SelectItem value="swahili">Swahili</SelectItem>
-                            <SelectItem value="kikuyu">Kikuyu</SelectItem>
-                            <SelectItem value="luo">Luo</SelectItem>
+                            {LANGUAGES.map((lang) => (
+                              <SelectItem key={lang} value={lang}>
+                                {lang.charAt(0).toUpperCase() + lang.slice(1)}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
                       </div>
@@ -268,22 +529,39 @@ const GetStarted = () => {
 
                       <div className="space-y-4">
                         <h3 className="font-semibold text-foreground">Reminder Preferences</h3>
-                        {[
-                          'Appointment reminders',
-                          'Medication reminders', 
-                          'Weekly health tips',
-                          'Emergency notifications'
-                        ].map((pref) => (
-                          <div key={pref} className="flex items-center space-x-2">
-                            <Checkbox id={pref} defaultChecked />
-                            <Label htmlFor={pref}>{pref}</Label>
+                        {([
+                          { key: "appointments", label: "Appointment reminders" },
+                          { key: "medications", label: "Medication reminders" },
+                          { key: "tips", label: "Weekly health tips" },
+                          { key: "emergency", label: "Emergency notifications" },
+                        ] as const).map(({ key, label }) => (
+                          <div key={key} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={label}
+                              checked={profile.reminders[key]}
+                              onCheckedChange={(checked) =>
+                                setProfile((prev) => ({
+                                  ...prev,
+                                  reminders: {
+                                    ...prev.reminders,
+                                    [key]: Boolean(checked),
+                                  },
+                                }))
+                              }
+                            />
+                            <Label htmlFor={label}>{label}</Label>
                           </div>
                         ))}
                       </div>
 
                       <div className="space-y-4">
                         <h3 className="font-semibold text-foreground">Communication Method</h3>
-                        <Select>
+                        <Select
+                          value={profile.communicationMethod}
+                          onValueChange={(value) =>
+                            setProfile((prev) => ({ ...prev, communicationMethod: value }))
+                          }
+                        >
                           <SelectTrigger>
                             <SelectValue placeholder="How would you like to receive reminders?" />
                           </SelectTrigger>
@@ -297,14 +575,23 @@ const GetStarted = () => {
 
                       <div className="border rounded-lg p-4 bg-primary/5">
                         <div className="flex items-start space-x-2">
-                          <Checkbox id="terms" />
+                          <Checkbox
+                            id="terms"
+                            checked={profile.agreedToTerms}
+                            onCheckedChange={(checked) =>
+                              setProfile((prev) => ({
+                                ...prev,
+                                agreedToTerms: Boolean(checked),
+                              }))
+                            }
+                          />
                           <div className="text-sm">
                             <Label htmlFor="terms">
-                              I agree to the{' '}
+                              I agree to the{" "}
                               <Link to="/terms-of-service" className="text-primary hover:underline">
                                 Terms of Service
-                              </Link>{' '}
-                              and{' '}
+                              </Link>{" "}
+                              and{" "}
                               <Link to="/privacy-policy" className="text-primary hover:underline">
                                 Privacy Policy
                               </Link>
@@ -320,16 +607,33 @@ const GetStarted = () => {
                     <Button 
                       variant="outline" 
                       onClick={prevStep}
-                      disabled={step === 1}
+                      disabled={step === 1 || isSubmitting}
                     >
                       Previous
                     </Button>
                     <Button 
-                      onClick={step === totalSteps ? () => {} : nextStep}
+                      onClick={step === totalSteps ? handleComplete : nextStep}
+                      disabled={isSubmitting || (step === totalSteps && !canSubmit)}
                       variant="maternal"
                     >
-                      {step === totalSteps ? 'Complete Setup' : 'Next'}
-                      <ArrowRight className="w-4 h-4 ml-2" />
+                      {step === totalSteps ? (
+                        isSubmitting ? (
+                          <span className="flex items-center">
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Saving...
+                          </span>
+                        ) : (
+                          <>
+                            Complete Setup
+                            <ArrowRight className="w-4 h-4 ml-2" />
+                          </>
+                        )
+                      ) : (
+                        <>
+                          Next
+                          <ArrowRight className="w-4 h-4 ml-2" />
+                        </>
+                      )}
                     </Button>
                   </div>
                 </CardContent>
